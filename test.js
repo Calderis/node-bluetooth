@@ -24,6 +24,14 @@ bluetooth.on('device', (device) => {
     }
 });
 
+bluetooth.on('read', (res) => {
+    console.log(`Read from ${res.characteristic}: ${res.data} (Hex)`);
+
+    // Convert Hex to String if needed
+    const str = Buffer.from(res.data, 'hex').toString('utf8');
+    console.log('Decoded:', str);
+});
+
 bluetooth.on('connect', (device) => {
     console.log('Connected to:', device.uuid);
     setTimeout(() => {
@@ -63,15 +71,17 @@ bluetooth.on('characteristics', (data) => {
     console.log('Characteristics discovered:', data);
     if (data.characteristics.length > 0) {
         const charUuid = data.characteristics[0];
-        console.log(`Reading characteristic ${charUuid}...`);
+
+        // Also try reading once
         bluetooth.read(data.uuid, data.service, charUuid);
+        // Subscribe to notifications
+        bluetooth.subscribe(data.uuid, data.service, charUuid);
     }
 });
 
-bluetooth.on('read', (data) => {
-    console.log('Read data:', data);
-    console.log('Test complete. Exiting.');
-    process.exit(0);
+bluetooth.on('data', (data) => {
+    console.log('Received data (notification/read):', data);
+    // console.log('Test complete logic here, but keeping open for notifications...');
 });
 
 bluetooth.start();

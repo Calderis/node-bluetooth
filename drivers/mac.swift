@@ -11,6 +11,7 @@ struct Command: Decodable {
     let characteristics: [String]?
     let characteristic: String?
     let data: String? // Hex string
+    let notify: Bool?
 }
 
 struct Response: Encodable {
@@ -113,6 +114,14 @@ class BluetoothDriver: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
                let dataHex = cmd.data {
                 writeValue(uuid: uuid, serviceUUID: serviceString, characteristicUUID: charString, dataHex: dataHex)
             }
+        case "subscribe":
+            if let uuidString = cmd.uuid,
+               let uuid = UUID(uuidString: uuidString),
+               let serviceString = cmd.service,
+               let charString = cmd.characteristic,
+               let enable = cmd.notify {
+                subscribe(uuid: uuid, serviceUUID: serviceString, characteristicUUID: charString, enable: enable)
+            }
         default:
             log("Unknown command: \(cmd.command)")
         }
@@ -169,6 +178,11 @@ class BluetoothDriver: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         peripheral.readValue(for: characteristic)
     }
     
+    func subscribe(uuid: UUID, serviceUUID: String, characteristicUUID: String, enable: Bool) {
+        guard let (peripheral, characteristic) = findCharacteristic(uuid: uuid, serviceUUID: serviceUUID, characteristicUUID: characteristicUUID) else { return }
+        peripheral.setNotifyValue(enable, for: characteristic)
+    }
+
     func writeValue(uuid: UUID, serviceUUID: String, characteristicUUID: String, dataHex: String) {
         guard let (peripheral, characteristic) = findCharacteristic(uuid: uuid, serviceUUID: serviceUUID, characteristicUUID: characteristicUUID) else { return }
         

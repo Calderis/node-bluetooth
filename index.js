@@ -60,7 +60,6 @@ class BluetoothManager extends EventEmitter {
 
         this.process.on('close', (code) => {
             this.isStarted = false;
-            this.emit('stateChange', 'poweredOff');
             // console.log(`Driver process exited with code ${code}`);
         });
     }
@@ -153,6 +152,10 @@ class BluetoothManager extends EventEmitter {
 
     read(uuid, serviceId, characteristicId) {
         this.sendCommand('read', { uuid, service: serviceId, characteristic: characteristicId });
+    }
+
+    subscribe(uuid, serviceId, characteristicId, enable = true) {
+        this.sendCommand('subscribe', { uuid, service: serviceId, characteristic: characteristicId, notify: enable });
     }
 
     write(uuid, serviceId, characteristicId, data, encoding = 'utf8') {
