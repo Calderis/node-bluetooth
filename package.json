@@ -1,0 +1,7 @@
+{
+  "name": "@calderis/node-bluetooth",
+  "version": "1.0.0",
+  "author": "Calderis",
+  "main": "index.js",
+  "license": "MIT"
+}
