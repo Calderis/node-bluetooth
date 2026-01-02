@@ -28,6 +28,7 @@ namespace NodeBluetooth
         [DataMember] public List<string> characteristics;
         [DataMember] public string characteristic;
         [DataMember] public string data; // Hex
+        [DataMember] public bool? notify;
     }
 
     [DataContract]
@@ -42,6 +43,7 @@ namespace NodeBluetooth
     {
         static BluetoothLEAdvertisementWatcher watcher;
         static Dictionary<string, BluetoothLEDevice> connectedDevices = new Dictionary<string, BluetoothLEDevice>();
+        static Dictionary<string, GattCharacteristic> subscribedCharacteristics = new Dictionary<string, GattCharacteristic>();
         static Dictionary<string, Dictionary<string, Guid>> serviceCache = new Dictionary<string, Dictionary<string, Guid>>(); // DeviceID -> { ServiceUUID-String -> ServiceGUID }
         
         static void Main(string[] args)
@@ -115,6 +117,10 @@ namespace NodeBluetooth
                     case "write":
                          if (!string.IsNullOrEmpty(cmd.uuid) && !string.IsNullOrEmpty(cmd.service) && !string.IsNullOrEmpty(cmd.characteristic))
                             await WriteValue(cmd.uuid, cmd.service, cmd.characteristic, cmd.data);
+                        break;
+                    case "subscribe":
+                        if (!string.IsNullOrEmpty(cmd.uuid) && !string.IsNullOrEmpty(cmd.service) && !string.IsNullOrEmpty(cmd.characteristic) && cmd.notify != null)
+                            await Subscribe(cmd.uuid, cmd.service, cmd.characteristic, cmd.notify.Value);
                         break;
                     default:
                         Log("Unknown command: " + cmd.command);
@@ -315,6 +321,71 @@ namespace NodeBluetooth
                  characteristic = charId, 
                  success = (result.Status == GattCommunicationStatus.Success) 
              });
+        }
+
+        static async Task Subscribe(string uuid, string serviceId, string charId, bool enable)
+        {
+             string key = uuid + "/" + serviceId + "/" + charId;
+
+             if (!enable)
+             {
+                 if (subscribedCharacteristics.ContainsKey(key))
+                 {
+                     var c = subscribedCharacteristics[key];
+                     try {
+                        await c.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.None);
+                        c.ValueChanged -= Characteristic_ValueChanged;
+                     } catch {}
+                     subscribedCharacteristics.Remove(key);
+                 }
+                 return;
+             }
+             
+             // Enable
+             var characteristic = await GetCharacteristic(uuid, serviceId, charId);
+             if (characteristic == null) return;
+
+             GattClientCharacteristicConfigurationDescriptorValue value = GattClientCharacteristicConfigurationDescriptorValue.Notify;
+             if (characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Indicate))
+                 value = GattClientCharacteristicConfigurationDescriptorValue.Indicate;
+
+             var status = await characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(value);
+             
+             if (status == GattCommunicationStatus.Success)
+             {
+                 characteristic.ValueChanged += Characteristic_ValueChanged;
+                 subscribedCharacteristics[key] = characteristic;
+             }
+             else 
+             {
+                 Log("Subscribe failed: " + status);
+             }
+        }
+
+        private static void Characteristic_ValueChanged(GattCharacteristic sender, GattValueChangedEventArgs args)
+        {
+            var reader = DataReader.FromBuffer(args.CharacteristicValue);
+            byte[] bytes = new byte[args.CharacteristicValue.Length];
+            reader.ReadBytes(bytes);
+            string hex = BitConverter.ToString(bytes).Replace("-", "");
+
+            // We need to find the device UUID. 
+            // sender.Service.Device.BluetoothAddress might be accessible if we kept the device open?
+            // Or we can just rely on the fact we have the object.
+            // Using "X" format for address.
+            
+            try {
+                // Note: Accessing Service.Device here might assume the device is still connected/valid.
+                string deviceUuid = sender.Service.Device.BluetoothAddress.ToString("X");
+                 SendEvent("read", new { 
+                    uuid = deviceUuid, 
+                    service = sender.Service.Uuid.ToString(), 
+                    characteristic = sender.Uuid.ToString(), 
+                    data = hex 
+                });
+            } catch (Exception ex) {
+                Log("Error in ValueChanged: " + ex.Message);
+            }
         }
 
         // Helper to get characteristic
