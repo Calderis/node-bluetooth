@@ -30,25 +30,25 @@ class BluetoothManager extends EventEmitter {
             cmd = '/usr/bin/swift';
             args = [path.join(__dirname, 'drivers', 'mac.swift')];
         } else if (platform === 'win32') {
-            // // Windows: Attempt to spawn a compiled driver or the placeholder.
-            // // Ideally, we would check for 'drivers/win.exe'
-            // const exePath = path.join(__dirname, 'drivers', 'win.exe');
-            // const fs = require('fs');
-            // if (fs.existsSync(exePath)) {
-            //     cmd = exePath;
-            //     args = [];
-            // } else {
-            //     console.warn("Windows driver not compiled. Please run 'npm run compile:win' on your Windows machine to compile drivers/win.cs");
-            //     // Prevent crash loop by not spawning or spawning a dummy
-            //     return;
-            // }
-            // Windows: Run PowerShell driver (no compilation needed)
-            cmd = 'powershell';
-            args = [
-                '-NoProfile',
-                '-ExecutionPolicy', 'Bypass',
-                '-File', path.join(__dirname, 'drivers', 'win.ps1')
-            ];
+            // Windows: Attempt to spawn a compiled driver or the placeholder.
+            // Ideally, we would check for 'drivers/win.exe'
+            const exePath = path.join(__dirname, 'drivers', 'win.exe');
+            const fs = require('fs');
+            if (fs.existsSync(exePath)) {
+                cmd = exePath;
+                args = [];
+            } else {
+                console.warn("Windows driver not compiled. Please run 'npm run compile:win' on your Windows machine to compile drivers/win.cs");
+                // Prevent crash loop by not spawning or spawning a dummy
+                return;
+            }
+            // // Windows: Run PowerShell driver (no compilation needed)
+            // cmd = 'powershell';
+            // args = [
+            //     '-NoProfile',
+            //     '-ExecutionPolicy', 'Bypass',
+            //     '-File', path.join(__dirname, 'drivers', 'win.ps1')
+            // ];
         } else {
             throw new Error(`Platform ${platform} not supported`);
         }
