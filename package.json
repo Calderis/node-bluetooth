@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "node test.js",
-    "compile:win": "cd drivers && compile.bat"
+    "compile:mac": "bash drivers/compile-mac.sh",
+    "compile:win": "cd drivers && compile.bat",
+    "compile": "npm run compile:mac || true"
   },
   "license": "MIT"
 }

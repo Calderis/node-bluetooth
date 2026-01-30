@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build artifacts (these should be compiled on the target machine or included in releases)
+# Uncomment the lines below if you want to exclude binaries from git
+# drivers/mac
+# drivers/win.exe
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

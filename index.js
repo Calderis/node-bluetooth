@@ -25,10 +25,24 @@ class BluetoothManager extends EventEmitter {
         const platform = os.platform();
 
         if (platform === 'darwin') {
-            // macOS: Run swift driver directly
-            // In production/package, you might want to compile this first
-            cmd = '/usr/bin/swift';
-            args = [path.join(__dirname, 'drivers', 'mac.swift')];
+            // macOS: Check for pre-compiled binary first, fallback to Swift
+            const fs = require('fs');
+            const compiledPath = path.join(__dirname, 'drivers', 'mac');
+
+            if (fs.existsSync(compiledPath)) {
+                // Use pre-compiled universal binary (works without Swift installed)
+                cmd = compiledPath;
+                args = [];
+            } else if (fs.existsSync('/usr/bin/swift')) {
+                // Fallback: Run Swift interpreter (requires Xcode/Swift)
+                console.warn('Using Swift interpreter. For better performance, run: npm run compile:mac');
+                cmd = '/usr/bin/swift';
+                args = [path.join(__dirname, 'drivers', 'mac.swift')];
+            } else {
+                console.error('macOS Bluetooth driver not available.');
+                console.error('Please run "npm run compile:mac" on a Mac with Xcode installed.');
+                return;
+            }
         } else if (platform === 'win32') {
             // Windows: Attempt to spawn a compiled driver or the placeholder.
             // Ideally, we would check for 'drivers/win.exe'
