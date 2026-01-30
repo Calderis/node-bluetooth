@@ -56,13 +56,6 @@ class BluetoothManager extends EventEmitter {
                 // Prevent crash loop by not spawning or spawning a dummy
                 return;
             }
-            // // Windows: Run PowerShell driver (no compilation needed)
-            // cmd = 'powershell';
-            // args = [
-            //     '-NoProfile',
-            //     '-ExecutionPolicy', 'Bypass',
-            //     '-File', path.join(__dirname, 'drivers', 'win.ps1')
-            // ];
         } else {
             throw new Error(`Platform ${platform} not supported`);
         }
@@ -143,7 +136,6 @@ class BluetoothManager extends EventEmitter {
                 this.emit('write', msg.data); // { uuid, service, characteristic }
                 break;
             default:
-            // console.log('Unknown event:', msg);
         }
     }
 
@@ -168,7 +160,7 @@ class BluetoothManager extends EventEmitter {
     }
 
     discoverCharacteristics(uuid, serviceId, characteristics = []) {
-        this.sendCommand('discoverCharacteristics', { uuid, service: serviceId, characteristics });
+        this.sendCommand('discoverCharacteristics', { uuid, service: "0000ffe0-0000-1000-8000-00805f9b34fb", characteristics });
     }
 
     read(uuid, serviceId, characteristicId) {

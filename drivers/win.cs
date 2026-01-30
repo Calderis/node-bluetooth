@@ -5,12 +5,14 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
-using System.Runtime.Serialization;
-using System.Runtime.Serialization.Json;
+using System.IO;
+using System.Web.Script.Serialization; // JavaScriptSerializer
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Windows.Storage.Streams;
+using Windows.Foundation;
+using System.Runtime.InteropServices.WindowsRuntime; // For EventRegistrationToken
 
 // Compile with: 
 // csc /target:exe /out:drivers/win.exe /r:"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.19041.0\Windows.winmd" /r:"C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETCore\v4.5\System.Runtime.WindowsRuntime.dll" drivers/win.cs
@@ -18,36 +20,43 @@ using Windows.Storage.Streams;
 
 namespace NodeBluetooth
 {
-    [DataContract]
     public class Command
     {
-        [DataMember] public string command;
-        [DataMember] public string uuid;
-        [DataMember] public List<string> services;
-        [DataMember] public string service;
-        [DataMember] public List<string> characteristics;
-        [DataMember] public string characteristic;
-        [DataMember] public string data; // Hex
-        [DataMember] public bool? notify;
+        public string command;
+        public string uuid;
+        public List<string> services;
+        public string service;
+        public List<string> characteristics;
+        public string characteristic;
+        public string data; // Hex
+        public bool? notify;
     }
 
-    [DataContract]
     public class Response
     {
-        [DataMember] public string eventName;
-        [DataMember(Name = "event")] public string Event { get { return eventName; } set { eventName = value; } }
-        [DataMember] public object data;
+        public string @event; // reserved word escape or just use name "event" mapping? JavaScriptSerializer matches field names.
+        public object data;
     }
 
     class Program
     {
+        class Subscription {
+            public GattCharacteristic Characteristic;
+            public GattDeviceService Service; // Keep service reference alive!
+            public TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> Handler;
+        }
+
         static BluetoothLEAdvertisementWatcher watcher;
         static Dictionary<string, BluetoothLEDevice> connectedDevices = new Dictionary<string, BluetoothLEDevice>();
-        static Dictionary<string, GattCharacteristic> subscribedCharacteristics = new Dictionary<string, GattCharacteristic>();
+        static Dictionary<string, Subscription> subscribedCharacteristics = new Dictionary<string, Subscription>();
         static Dictionary<string, Dictionary<string, Guid>> serviceCache = new Dictionary<string, Dictionary<string, Guid>>(); // DeviceID -> { ServiceUUID-String -> ServiceGUID }
+        static Dictionary<string, Dictionary<string, GattDeviceService>> serviceObjectCache = new Dictionary<string, Dictionary<string, GattDeviceService>>(); // Keep service objects alive
+        static Dictionary<string, Dictionary<string, GattCharacteristic>> characteristicObjectCache = new Dictionary<string, Dictionary<string, GattCharacteristic>>(); // Keep characteristic objects alive
         
         static void Main(string[] args)
         {
+            // Set up watcher
+            watcher = new BluetoothLEAdvertisementWatcher();
             // Set up watcher
             watcher = new BluetoothLEAdvertisementWatcher();
             watcher.ScanningMode = BluetoothLEScanningMode.Active;
@@ -58,8 +67,7 @@ namespace NodeBluetooth
             SendEvent("stateChange", "poweredOn"); // TODO: Check actual radio state
 
             // Input loop
-            var serializer = new DataContractJsonSerializer(typeof(Command));
-            var inputStream = Console.OpenStandardInput();
+            var serializer = new JavaScriptSerializer();
             
             // Allow long lines? buffer?
             // Simple line-based reading
@@ -71,11 +79,8 @@ namespace NodeBluetooth
                     if (line == null) break; // EOF
                     if (string.IsNullOrWhiteSpace(line)) continue;
 
-                    using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(line)))
-                    {
-                        var cmd = (Command)serializer.ReadObject(ms);
-                        HandleCommand(cmd);
-                    }
+                    var cmd = serializer.Deserialize<Command>(line);
+                    HandleCommand(cmd);
                 }
                 catch (Exception ex)
                 {
@@ -84,7 +89,7 @@ namespace NodeBluetooth
             }
         }
 
-        static async void HandleCommand(Command cmd)
+        static void HandleCommand(Command cmd)
         {
             try 
             {
@@ -98,29 +103,29 @@ namespace NodeBluetooth
                         watcher.Stop();
                         break;
                     case "connect":
-                        if (!string.IsNullOrEmpty(cmd.uuid)) await Connect(cmd.uuid);
+                        if (!string.IsNullOrEmpty(cmd.uuid)) Connect(cmd.uuid);
                         break;
                     case "disconnect":
                         if (!string.IsNullOrEmpty(cmd.uuid)) Disconnect(cmd.uuid);
                         break;
                     case "discoverServices":
-                        if (!string.IsNullOrEmpty(cmd.uuid)) await DiscoverServices(cmd.uuid, cmd.services);
+                        if (!string.IsNullOrEmpty(cmd.uuid)) DiscoverServices(cmd.uuid, cmd.services);
                         break;
                     case "discoverCharacteristics":
                         if (!string.IsNullOrEmpty(cmd.uuid) && !string.IsNullOrEmpty(cmd.service))
-                            await DiscoverCharacteristics(cmd.uuid, cmd.service, cmd.characteristics);
+                            DiscoverCharacteristics(cmd.uuid, cmd.service, cmd.characteristics);
                         break;
                     case "read":
                         if (!string.IsNullOrEmpty(cmd.uuid) && !string.IsNullOrEmpty(cmd.service) && !string.IsNullOrEmpty(cmd.characteristic))
-                            await ReadValue(cmd.uuid, cmd.service, cmd.characteristic);
+                            ReadValue(cmd.uuid, cmd.service, cmd.characteristic);
                         break;
                     case "write":
                          if (!string.IsNullOrEmpty(cmd.uuid) && !string.IsNullOrEmpty(cmd.service) && !string.IsNullOrEmpty(cmd.characteristic))
-                            await WriteValue(cmd.uuid, cmd.service, cmd.characteristic, cmd.data);
+                            WriteValue(cmd.uuid, cmd.service, cmd.characteristic, cmd.data);
                         break;
                     case "subscribe":
                         if (!string.IsNullOrEmpty(cmd.uuid) && !string.IsNullOrEmpty(cmd.service) && !string.IsNullOrEmpty(cmd.characteristic) && cmd.notify != null)
-                            await Subscribe(cmd.uuid, cmd.service, cmd.characteristic, cmd.notify.Value);
+                            Subscribe(cmd.uuid, cmd.service, cmd.characteristic, cmd.notify.Value);
                         break;
                     default:
                         Log("Unknown command: " + cmd.command);
@@ -138,28 +143,50 @@ namespace NodeBluetooth
             var deviceId = args.BluetoothAddress.ToString("X");
             var name = args.Advertisement.LocalName;
             
+            // Fallback: If local name is missing, try to get it from the system/cached device object
+            // mimicking mac.swift behavior (peripheral.name vs content)
+            if (string.IsNullOrEmpty(name))
+            {
+                try
+                {
+                    // Note: This is a blocking call on the watcher thread.
+                    // Doing this for every unnamed packet might be heavy, but it solves the missing name issue.
+                    var device = SyncWait(BluetoothLEDevice.FromBluetoothAddressAsync(args.BluetoothAddress));
+                    if (device != null)
+                    {
+                         if (!string.IsNullOrEmpty(device.Name))
+                         {
+                             name = device.Name;
+                         }
+                         device.Dispose();
+                    }
+                }
+                catch { } // Ignore errors fetching device
+            }
+            var rssi = args.RawSignalStrengthInDBm;
+            
             var data = new Dictionary<string, object>
             {
                 { "uuid", deviceId },
-                { "rssi", args.RawSignalStrengthInDBm },
+                { "rssi", rssi },
                 { "name", name }
             };
 
             var services = new List<string>();
             foreach(var uuid in args.Advertisement.ServiceUuids) {
-                services.Add(uuid.ToString());
+                services.Add(ToShortUuid(uuid));
             }
             data["serviceUuids"] = services;
 
             SendEvent("device", data);
         }
 
-        static async Task Connect(string uuid)
+        static void Connect(string uuid)
         {
             try 
             {
                 ulong addr = Convert.ToUInt64(uuid, 16);
-                var device = await BluetoothLEDevice.FromBluetoothAddressAsync(addr);
+                var device = SyncWait(BluetoothLEDevice.FromBluetoothAddressAsync(addr));
                 
                 if (device == null)
                 {
@@ -170,10 +197,25 @@ namespace NodeBluetooth
                 connectedDevices[uuid] = device;
                 device.ConnectionStatusChanged += Device_ConnectionStatusChanged;
                 
-                // Note: Windows doesn't fully "connect" until you do something with GATT.
-                // But we can signal we possess the object.
-                // To force connection, we often request services or similar.
-                // For now, let's pretend connected and rely on auto-connect during ops.
+                // Windows doesn't fully "connect" until you do something with GATT.
+                // Force connection by requesting GATT services
+                var gattResult = SyncWait(device.GetGattServicesAsync(BluetoothCacheMode.Uncached));
+                if (gattResult.Status != GattCommunicationStatus.Success)
+                {
+                    Log("Failed to connect to GATT services: " + gattResult.Status);
+                    connectedDevices.Remove(uuid);
+                    device.Dispose();
+                    return;
+                }
+                
+                // Verify we're actually connected
+                if (device.ConnectionStatus != BluetoothConnectionStatus.Connected)
+                {
+                    Log("Device not connected after GATT request");
+                    connectedDevices.Remove(uuid);
+                    device.Dispose();
+                    return;
+                }
                 
                 SendEvent("connected", new { uuid = uuid });
             } 
@@ -190,6 +232,21 @@ namespace NodeBluetooth
             {
                 if (connectedDevices.ContainsKey(uuid))
                 {
+                    // Clean up subscriptions for this device
+                    var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
+                    foreach (var key in keysToRemove)
+                    {
+                        subscribedCharacteristics.Remove(key);
+                    }
+                    
+                    // Clean up caches
+                    if (serviceObjectCache.ContainsKey(uuid))
+                        serviceObjectCache.Remove(uuid);
+                    if (characteristicObjectCache.ContainsKey(uuid))
+                        characteristicObjectCache.Remove(uuid);
+                    if (serviceCache.ContainsKey(uuid))
+                        serviceCache.Remove(uuid);
+                    
                     connectedDevices.Remove(uuid);
                     SendEvent("disconnected", new { uuid = uuid });
                 }
@@ -200,6 +257,21 @@ namespace NodeBluetooth
         {
             if (connectedDevices.ContainsKey(uuid))
             {
+                // Clean up subscriptions for this device
+                var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
+                foreach (var key in keysToRemove)
+                {
+                    subscribedCharacteristics.Remove(key);
+                }
+                
+                // Clean up caches
+                if (serviceObjectCache.ContainsKey(uuid))
+                    serviceObjectCache.Remove(uuid);
+                if (characteristicObjectCache.ContainsKey(uuid))
+                    characteristicObjectCache.Remove(uuid);
+                if (serviceCache.ContainsKey(uuid))
+                    serviceCache.Remove(uuid);
+                
                 var device = connectedDevices[uuid];
                 device.Dispose(); // Disconnects
                 connectedDevices.Remove(uuid);
@@ -207,12 +279,12 @@ namespace NodeBluetooth
             }
         }
 
-        static async Task DiscoverServices(string uuid, List<string> filter)
+        static void DiscoverServices(string uuid, List<string> filter)
         {
             if (!connectedDevices.ContainsKey(uuid)) return;
             var device = connectedDevices[uuid];
 
-            var result = await device.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+            var result = SyncWait(device.GetGattServicesAsync(BluetoothCacheMode.Uncached));
             
             if (result.Status == GattCommunicationStatus.Success)
             {
@@ -240,51 +312,96 @@ namespace NodeBluetooth
             }
         }
 
-        static async Task DiscoverCharacteristics(string uuid, string serviceId, List<string> filter)
+        static void DiscoverCharacteristics(string uuid, string serviceId, List<string> filter)
         {
-             if (!connectedDevices.ContainsKey(uuid)) return;
-             var device = connectedDevices[uuid];
-             
-             // Re-find service (could cache service objects explicitly but let's re-fetch for simplicity/robustness)
-             if (!serviceCache.ContainsKey(uuid) || !serviceCache[uuid].ContainsKey(serviceId))
-             {
-                 // Try to parse serviceId as Guid directly if not in cache (e.g. if known common UUID)
-                 // Or just fail.
-                 // Let's assume DiscoverServices was called first.
-             }
+             BluetoothLEDevice device;
+             if (!connectedDevices.TryGetValue(uuid, out device)) return;
 
              // Parse GUID
-             if (!Guid.TryParse(serviceId, out Guid serviceGuid))
+             Guid serviceGuid;
+             if (!Guid.TryParse(serviceId, out serviceGuid))
              {
-                 // Maybe it's a short UUID? 
                  Log("Invalid Service GUID: " + serviceId);
                  return;
              }
 
-             var serviceResult = await device.GetGattServicesForUuidAsync(serviceGuid);
-             if (serviceResult.Status != GattCommunicationStatus.Success || serviceResult.Services.Count == 0) return;
-             
-             var service = serviceResult.Services[0];
-             var result = await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached);
+             // Normalize to lowercase for consistent cache keys
+             string serviceKey = serviceId.ToLowerInvariant();
 
-             if (result.Status == GattCommunicationStatus.Success)
+             try
              {
-                 var chars = new List<string>();
-                 foreach (var c in result.Characteristics)
+                 // Initialize caches if needed (thread-safe check)
+                 lock (serviceObjectCache)
                  {
-                     chars.Add(c.Uuid.ToString());
+                     if (!serviceObjectCache.ContainsKey(uuid))
+                         serviceObjectCache[uuid] = new Dictionary<string, GattDeviceService>(StringComparer.OrdinalIgnoreCase);
+                 }
+                 lock (characteristicObjectCache)
+                 {
+                     if (!characteristicObjectCache.ContainsKey(uuid))
+                         characteristicObjectCache[uuid] = new Dictionary<string, GattCharacteristic>(StringComparer.OrdinalIgnoreCase);
+                 }
+
+                 // Check if still connected
+                 if (!connectedDevices.ContainsKey(uuid)) return;
+
+                 // Get or fetch service object and cache it
+                 GattDeviceService service;
+                 Dictionary<string, GattDeviceService> serviceDict;
+                 if (!serviceObjectCache.TryGetValue(uuid, out serviceDict)) return;
+                 
+                 if (!serviceDict.TryGetValue(serviceKey, out service))
+                 {
+                     var serviceResult = SyncWait(device.GetGattServicesForUuidAsync(serviceGuid));
+                     if (serviceResult.Status != GattCommunicationStatus.Success || serviceResult.Services.Count == 0) 
+                     {
+                         Log("Failed to get service: " + serviceResult.Status);
+                         return;
+                     }
+                     service = serviceResult.Services[0];
+                     if (serviceObjectCache.ContainsKey(uuid))
+                         serviceObjectCache[uuid][serviceKey] = service;
                  }
                  
-                 SendEvent("characteristics", new { uuid = uuid, service = serviceId, characteristics = chars });
+                 var result = SyncWait(service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached));
+
+                 if (result.Status == GattCommunicationStatus.Success)
+                 {
+                     var chars = new List<string>();
+                     foreach (var c in result.Characteristics)
+                     {
+                         var charUuid = c.Uuid.ToString().ToLowerInvariant();
+                         chars.Add(charUuid);
+                         
+                         // Cache each characteristic object for later use (read/write/subscribe)
+                         string charCacheKey = serviceKey + "/" + charUuid;
+                         if (characteristicObjectCache.ContainsKey(uuid))
+                             characteristicObjectCache[uuid][charCacheKey] = c;
+                     }
+                     
+                     SendEvent("characteristics", new { uuid = uuid, service = serviceId, characteristics = chars });
+                 }
+                 else
+                 {
+                     Log("Failed to get characteristics: " + result.Status);
+                 }
+             }
+             catch (KeyNotFoundException)
+             {
+                 Log("Device disconnected during characteristic discovery");
+             }
+             catch (Exception ex)
+             {
+                 Log("Error in DiscoverCharacteristics: " + ex.Message);
              }
         }
 
-        static async Task ReadValue(string uuid, string serviceId, string charId)
+        static void ReadValue(string uuid, string serviceId, string charId)
         {
-             var characteristic = await GetCharacteristic(uuid, serviceId, charId);
+             var characteristic = GetCharacteristic(uuid, serviceId, charId);
              if (characteristic == null) return;
 
-             var result = await characteristic.ReadValueAsync(BluetoothCacheMode.Uncached);
+             var result = SyncWait(characteristic.ReadValueAsync(BluetoothCacheMode.Uncached));
              if (result.Status == GattCommunicationStatus.Success)
              {
                  var reader = DataReader.FromBuffer(result.Value);
@@ -300,9 +417,9 @@ namespace NodeBluetooth
              }
         }
 
-        static async Task WriteValue(string uuid, string serviceId, string charId, string hexData)
+        static void WriteValue(string uuid, string serviceId, string charId, string hexData)
         {
-             var characteristic = await GetCharacteristic(uuid, serviceId, charId);
+             var characteristic = GetCharacteristic(uuid, serviceId, charId);
              if (characteristic == null) return;
              
              byte[] data = StringToByteArray(hexData);
@@ -313,7 +430,7 @@ namespace NodeBluetooth
                         ? GattWriteOption.WriteWithResponse 
                         : GattWriteOption.WriteWithoutResponse;
              
-             var result = await characteristic.WriteValueWithResultAsync(writer.DetachBuffer(), type);
+             var result = SyncWait(characteristic.WriteValueWithResultAsync(writer.DetachBuffer(), type));
              
              SendEvent("write", new { 
                  uuid = uuid, 
@@ -323,7 +440,7 @@ namespace NodeBluetooth
              });
         }
 
-        static async Task Subscribe(string uuid, string serviceId, string charId, bool enable)
+        static void Subscribe(string uuid, string serviceId, string charId, bool enable)
         {
              string key = uuid + "/" + serviceId + "/" + charId;
 
@@ -331,10 +448,11 @@ namespace NodeBluetooth
              {
                  if (subscribedCharacteristics.ContainsKey(key))
                  {
-                     var c = subscribedCharacteristics[key];
+                     var sub = subscribedCharacteristics[key];
+                     var c = sub.Characteristic;
                      try {
-                        await c.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.None);
-                        c.ValueChanged -= Characteristic_ValueChanged;
+                        SyncWait(c.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.None));
+                        c.ValueChanged -= sub.Handler;
                      } catch {}
                      subscribedCharacteristics.Remove(key);
                  }
@@ -342,19 +460,33 @@ namespace NodeBluetooth
              }
              
              // Enable
-             var characteristic = await GetCharacteristic(uuid, serviceId, charId);
-             if (characteristic == null) return;
+             GattDeviceService service;
+             var characteristic = GetCharacteristicWithService(uuid, serviceId, charId, out service);
+             if (characteristic == null) {
+                 Log("Subscribe failed: characteristic not found");
+                 return;
+             }
 
-             GattClientCharacteristicConfigurationDescriptorValue value = GattClientCharacteristicConfigurationDescriptorValue.Notify;
-             if (characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Indicate))
+             // Prefer Notify over Indicate - many devices use Notify
+             GattClientCharacteristicConfigurationDescriptorValue value;
+             if (characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))
+                 value = GattClientCharacteristicConfigurationDescriptorValue.Notify;
+             else if (characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Indicate))
                  value = GattClientCharacteristicConfigurationDescriptorValue.Indicate;
+             else {
+                 Log("Subscribe failed: characteristic does not support Notify or Indicate");
+                 return;
+             }
 
-             var status = await characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(value);
+             var status = SyncWait(characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(value));
              
              if (status == GattCommunicationStatus.Success)
              {
-                 characteristic.ValueChanged += Characteristic_ValueChanged;
-                 subscribedCharacteristics[key] = characteristic;
+                 var handler = new TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs>(Characteristic_ValueChanged);
+                 characteristic.ValueChanged += handler;
+                 subscribedCharacteristics[key] = new Subscription { Characteristic = characteristic, Service = service, Handler = handler };                 
+                 // Send confirmation event
+                 SendEvent("notify", new { uuid = uuid, service = serviceId, characteristic = charId, state = true });
              }
              else 
              {
@@ -388,22 +520,53 @@ namespace NodeBluetooth
             }
         }
 
-        // Helper to get characteristic
-        static async Task<GattCharacteristic> GetCharacteristic(string uuid, string serviceId, string charId)
+        static GattCharacteristic GetCharacteristic(string uuid, string serviceId, string charId)
         {
+            GattDeviceService unusedService;
+            return GetCharacteristicWithService(uuid, serviceId, charId, out unusedService);
+        }
+
+        static GattCharacteristic GetCharacteristicWithService(string uuid, string serviceId, string charId, out GattDeviceService service)
+        {
+            service = null;
             if (!connectedDevices.ContainsKey(uuid)) return null;
             var device = connectedDevices[uuid];
             
-            if (!Guid.TryParse(serviceId, out Guid sGuid)) return null;
-            if (!Guid.TryParse(charId, out Guid cGuid)) return null;
+            Guid sGuid;
+            if (!Guid.TryParse(serviceId, out sGuid)) return null;
+            Guid cGuid;
+            if (!Guid.TryParse(charId, out cGuid)) return null;
 
-            var sResult = await device.GetGattServicesForUuidAsync(sGuid);
-            if (sResult.Status != GattCommunicationStatus.Success || sResult.Services.Count == 0) return null;
+            // Normalize to lowercase for consistent cache keys
+            string serviceKey = serviceId.ToLowerInvariant();
+            string charKey = charId.ToLowerInvariant();
+
+            // Check if we have a cached service object
+            if (!serviceObjectCache.ContainsKey(uuid))
+                serviceObjectCache[uuid] = new Dictionary<string, GattDeviceService>(StringComparer.OrdinalIgnoreCase);
             
-            var cResult = await sResult.Services[0].GetCharacteristicsForUuidAsync(cGuid);
-            if (cResult.Status != GattCommunicationStatus.Success || cResult.Characteristics.Count == 0) return null;
+            if (!serviceObjectCache[uuid].ContainsKey(serviceKey))
+            {
+                var sResult = SyncWait(device.GetGattServicesForUuidAsync(sGuid));
+                if (sResult.Status != GattCommunicationStatus.Success || sResult.Services.Count == 0) return null;
+                serviceObjectCache[uuid][serviceKey] = sResult.Services[0];
+            }
+            
+            service = serviceObjectCache[uuid][serviceKey];
 
-            return cResult.Characteristics[0];
+            // Check if we have a cached characteristic object
+            string charCacheKey = serviceKey + "/" + charKey;
+            if (!characteristicObjectCache.ContainsKey(uuid))
+                characteristicObjectCache[uuid] = new Dictionary<string, GattCharacteristic>(StringComparer.OrdinalIgnoreCase);
+            
+            if (!characteristicObjectCache[uuid].ContainsKey(charCacheKey))
+            {
+                var cResult = SyncWait(service.GetCharacteristicsForUuidAsync(cGuid));
+                if (cResult.Status != GattCommunicationStatus.Success || cResult.Characteristics.Count == 0) return null;
+                characteristicObjectCache[uuid][charCacheKey] = cResult.Characteristics[0];
+            }
+
+            return characteristicObjectCache[uuid][charCacheKey];
         }
 
         static void Log(string msg)
@@ -413,14 +576,9 @@ namespace NodeBluetooth
 
         static void SendEvent(string eventName, object data)
         {
-            var response = new Response { Event = eventName, data = data };
-            var serializer = new DataContractJsonSerializer(typeof(Response));
-            
-            using (var ms = new MemoryStream())
-            {
-                serializer.WriteObject(ms, response);
-                Console.WriteLine(Encoding.UTF8.GetString(ms.ToArray()));
-            }
+            var response = new Dictionary<string, object> { { "event", eventName }, { "data", data } };
+            var serializer = new JavaScriptSerializer();
+            Console.WriteLine(serializer.Serialize(response));
         }
         
         public static byte[] StringToByteArray(string hex)
@@ -429,6 +587,29 @@ namespace NodeBluetooth
                              .Where(x => x % 2 == 0)
                              .Select(x => Convert.ToByte(hex.Substring(x, 2), 16))
                              .ToArray();
+        }
+
+        static string ToShortUuid(Guid guid)
+        {
+            string s = guid.ToString();
+            if (s.Length == 36 && s.EndsWith("-0000-1000-8000-00805f9b34fb", StringComparison.OrdinalIgnoreCase))
+            {
+                if (s.StartsWith("0000"))
+                {
+                    return s.Substring(4, 4);
+                }
+            }
+            return s;
+        }
+
+        static T SyncWait<T>(IAsyncOperation<T> op)
+        {
+            var wait = new ManualResetEvent(false);
+            op.Completed = new AsyncOperationCompletedHandler<T>((i, s) => {
+                wait.Set();
+            });
+            wait.WaitOne();
+            return op.GetResults();
         }
     }
 }
