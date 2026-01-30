@@ -1,22 +1,22 @@
 @echo off
 setlocal
 
-:: Default paths - adjust if your SDK version differs
-set "SDK_VER=10.0.19041.0"
-set "WINMD_PATH=C:\Program Files (x86)\Windows Kits\10\UnionMetadata\%SDK_VER%\Windows.winmd"
-set "RUNTIME_PATH=C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETCore\v4.5\System.Runtime.WindowsRuntime.dll"
+:: Paths to system metadata and .NET Framework
+set "WIN_META=C:\Windows\System32\WinMetadata"
+set "NET_FX=C:\Windows\Microsoft.NET\Framework64\v4.0.30319"
+set "CSC=%NET_FX%\csc.exe"
 
-echo Checking for Windows SDK at %WINMD_PATH%...
+echo Compiling win.cs -> win.exe using System Metadata...
 
-if not exist "%WINMD_PATH%" (
-    echo [ERROR] Windows.winmd not found.
-    echo Please check your Windows SDK version in "C:\Program Files (x86)\Windows Kits\10\UnionMetadata\"
-    echo and update SDK_VER in this script.
-    exit /b 1
-)
-
-echo Compiling win.cs -> win.exe...
-csc /target:exe /out:win.exe /r:"%WINMD_PATH%" /r:"%RUNTIME_PATH%" win.cs
+:: Compile using referencing local system winmd files instead of SDK
+"%CSC%" /target:exe /out:win.exe ^
+  /r:"%WIN_META%\Windows.Foundation.winmd" ^
+  /r:"%WIN_META%\Windows.Devices.winmd" ^
+  /r:"%WIN_META%\Windows.Storage.winmd" ^
+  /r:"%NET_FX%\System.Runtime.dll" ^
+  /r:"%NET_FX%\System.Runtime.InteropServices.WindowsRuntime.dll" ^
+  /r:"%NET_FX%\System.Web.Extensions.dll" ^
+  win.cs
 
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] built drivers\win.exe
