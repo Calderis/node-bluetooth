@@ -160,7 +160,7 @@ class BluetoothManager extends EventEmitter {
     }
 
     discoverCharacteristics(uuid, serviceId, characteristics = []) {
-        this.sendCommand('discoverCharacteristics', { uuid, service: "0000ffe0-0000-1000-8000-00805f9b34fb", characteristics });
+        this.sendCommand('discoverCharacteristics', { uuid, service: serviceId, characteristics });
     }
 
     read(uuid, serviceId, characteristicId) {
