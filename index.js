@@ -44,16 +44,21 @@ class BluetoothManager extends EventEmitter {
                 return;
             }
         } else if (platform === 'win32') {
-            // Windows: Attempt to spawn a compiled driver or the placeholder.
-            // Ideally, we would check for 'drivers/win.exe'
-            const exePath = path.join(__dirname, 'drivers', 'win.exe');
             const fs = require('fs');
+            // When packaged with Electron (asar), binaries must be in app.asar.unpacked
+            let exePath = path.join(__dirname, 'drivers', 'win.exe');
+            if (exePath.includes('app.asar' + path.sep)) {
+                exePath = exePath.replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep);
+            }
             if (fs.existsSync(exePath)) {
                 cmd = exePath;
                 args = [];
             } else {
-                console.warn("Windows driver not compiled. Please run 'npm run compile:win' on your Windows machine to compile drivers/win.cs");
-                // Prevent crash loop by not spawning or spawning a dummy
+                console.warn("Windows driver not found. Please run 'npm run compile:win' on your Windows machine to compile drivers/win.cs");
+                if (__dirname.includes('app.asar')) {
+                    console.warn("Electron detected: add asarUnpack in your electron-builder config:");
+                    console.warn('  "asarUnpack": ["**/node_modules/@calderis/node-bluetooth/drivers/**"]');
+                }
                 return;
             }
         } else {
