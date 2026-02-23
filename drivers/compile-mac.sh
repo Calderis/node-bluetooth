@@ -10,6 +10,16 @@ SWIFT_FILE="$SCRIPT_DIR/mac.swift"
 OUTPUT_ARM64="$SCRIPT_DIR/mac-arm64"
 OUTPUT_X86="$SCRIPT_DIR/mac-x86_64"
 OUTPUT_UNIVERSAL="$SCRIPT_DIR/mac"
+NOTARIZE_ZIP="$SCRIPT_DIR/mac-notarize.zip"
+
+# Load .env file if present
+ENV_FILE="$SCRIPT_DIR/../.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
 
 echo "Compiling Swift driver for macOS..."
 
@@ -37,6 +47,54 @@ rm -f "$OUTPUT_ARM64" "$OUTPUT_X86"
 
 # Make the binary executable
 chmod +x "$OUTPUT_UNIVERSAL"
+
+# Sign the universal binary
+echo "  -> Signing universal binary..."
+if [ -n "$CODESIGN_IDENTITY" ]; then
+    # Full Developer ID signing for notarization
+    codesign --deep --force --options runtime \
+        -s "$CODESIGN_IDENTITY" \
+        "$OUTPUT_UNIVERSAL"
+else
+    # Ad-hoc signing for local development
+    echo "  -> (APPLE_ID/APPLE_APP_PASSWORD/TEAM_ID not set, using ad-hoc signing)"
+    codesign -s - --force "$OUTPUT_UNIVERSAL"
+fi
+
+# Verify the signature
+echo "  -> Verifying signature..."
+if codesign --verify --strict "$OUTPUT_UNIVERSAL" 2>&1; then
+    echo "  -> Signature verified successfully."
+else
+    echo "Error: Signature verification failed."
+    exit 1
+fi
+
+# Notarize if credentials are available
+if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ] && [ -n "$TEAM_ID" ] && [ -n "$CODESIGN_IDENTITY" ]; then
+    echo "  -> Creating zip for notarization..."
+    ditto -c -k --keepParent "$OUTPUT_UNIVERSAL" "$NOTARIZE_ZIP"
+
+    echo "  -> Submitting for notarization (this may take a few minutes)..."
+    xcrun notarytool submit "$NOTARIZE_ZIP" \
+        --apple-id "$APPLE_ID" \
+        --password "$APPLE_APP_PASSWORD" \
+        --team-id "$TEAM_ID" \
+        --wait
+
+    rm -f "$NOTARIZE_ZIP"
+
+    echo "  -> Stapling notarization ticket..."
+    if xcrun stapler staple "$OUTPUT_UNIVERSAL" 2>&1; then
+        echo "  -> Ticket stapled successfully."
+    else
+        echo "  -> Warning: stapling failed (expected for plain binaries — Gatekeeper will verify online)."
+    fi
+
+    echo "  -> Notarization complete."
+else
+    echo "  -> Skipping notarization (APPLE_ID, APPLE_APP_PASSWORD, TEAM_ID or CODESIGN_IDENTITY not set)."
+fi
 
 echo "Done! Universal binary created at: $OUTPUT_UNIVERSAL"
 echo ""
