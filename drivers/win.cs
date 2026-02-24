@@ -77,7 +77,11 @@ namespace NodeBluetooth
                 try
                 {
                     string line = Console.ReadLine();
-                    if (line == null) break; // EOF
+                    if (line == null) // EOF: stdin closed, shut down cleanly
+                    {
+                        watcher.Stop();
+                        break;
+                    }
                     if (string.IsNullOrWhiteSpace(line)) continue;
 
                     var cmd = serializer.Deserialize<Command>(line);

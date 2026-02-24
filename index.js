@@ -69,6 +69,7 @@ class BluetoothManager extends EventEmitter {
             throw new Error(`Platform ${platform} not supported`);
         }
 
+        this.buffer = '';
         this.process = spawn(cmd, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true  // Prevent console window on Windows
@@ -85,17 +86,24 @@ class BluetoothManager extends EventEmitter {
         });
 
         this.process.on('close', (code) => {
+            this.process = null;
             this.isStarted = false;
             // console.log(`Driver process exited with code ${code}`);
         });
     }
 
     stop() {
-        if (this.process) {
+        return new Promise((resolve) => {
+            if (!this.process) return resolve();
+
+            this.process.once('close', () => {
+                this.process = null;
+                this.isStarted = false;
+                resolve();
+            });
+
             this.process.kill();
-            this.process = null;
-            this.isStarted = false;
-        }
+        });
     }
 
     handleData(data) {
