@@ -69,7 +69,10 @@ class BluetoothManager extends EventEmitter {
             throw new Error(`Platform ${platform} not supported`);
         }
 
-        this.process = spawn(cmd, args);
+        this.process = spawn(cmd, args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true  // Prevent console window on Windows
+        });
         this.isStarted = true;
 
         this.process.stdout.on('data', (data) => {
@@ -97,7 +100,8 @@ class BluetoothManager extends EventEmitter {
 
     handleData(data) {
         this.buffer += data.toString();
-        const lines = this.buffer.split('\n');
+        // Handle both Unix (\n) and Windows (\r\n) line endings
+        const lines = this.buffer.split(/\r?\n/);
         this.buffer = lines.pop(); // Keep partial line
 
         for (const line of lines) {

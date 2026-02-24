@@ -55,8 +55,9 @@ namespace NodeBluetooth
         
         static void Main(string[] args)
         {
-            // Set up watcher
-            watcher = new BluetoothLEAdvertisementWatcher();
+            // Force stdout auto-flush for piped output
+            Console.Out.Flush();
+            
             // Set up watcher
             watcher = new BluetoothLEAdvertisementWatcher();
             watcher.ScanningMode = BluetoothLEScanningMode.Active;
@@ -579,6 +580,7 @@ namespace NodeBluetooth
             var response = new Dictionary<string, object> { { "event", eventName }, { "data", data } };
             var serializer = new JavaScriptSerializer();
             Console.WriteLine(serializer.Serialize(response));
+            Console.Out.Flush(); // Force immediate output when stdout is redirected
         }
         
         public static byte[] StringToByteArray(string hex)
