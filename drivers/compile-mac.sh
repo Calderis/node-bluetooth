@@ -47,15 +47,18 @@ rm -f "$OUTPUT_ARM64" "$OUTPUT_X86"
 
 # Sign the universal binary
 echo "  -> Signing universal binary..."
+ENTITLEMENTS_PLIST="$SCRIPT_DIR/entitlements.plist"
+
 if [ -n "$CODESIGN_IDENTITY" ]; then
     # Full Developer ID signing for notarization
     codesign --deep --force --options runtime \
+        --entitlements "$ENTITLEMENTS_PLIST" \
         -s "$CODESIGN_IDENTITY" \
         "$OUTPUT_UNIVERSAL"
 else
     # Ad-hoc signing for local development
     echo "  -> (APPLE_ID/APPLE_APP_PASSWORD/TEAM_ID not set, using ad-hoc signing)"
-    codesign -s - --force "$OUTPUT_UNIVERSAL"
+    codesign -s - --force --entitlements "$ENTITLEMENTS_PLIST" "$OUTPUT_UNIVERSAL"
 fi
 
 # Verify the signature

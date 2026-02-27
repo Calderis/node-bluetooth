@@ -70,25 +70,46 @@ class BluetoothManager extends EventEmitter {
         }
 
         this.buffer = '';
-        this.process = spawn(cmd, args, {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            windowsHide: true  // Prevent console window on Windows
+        const spawnOptions = { stdio: ['pipe', 'pipe', 'pipe'] };
+        if (platform === 'win32') spawnOptions.windowsHide = true;
+
+        try {
+            this.process = spawn(cmd, args, spawnOptions);
+        } catch (err) {
+            console.error('Failed to start Bluetooth driver:', err);
+            return;
+        }
+
+        // Attach error handler immediately — if exec fails (pid undefined), Node.js
+        // emits 'error' asynchronously. Without a listener it becomes an uncaught
+        // exception that crashes the process.
+        this.process.on('error', (err) => {
+            console.error('Bluetooth driver process error:', err.code, err.message);
+            this.process = null;
+            this.isStarted = false;
+            this.emit('error', err);
         });
+
+        if (!this.process.stdout || !this.process.stderr) {
+            console.error('Bluetooth driver: stdio streams unavailable (pid:', this.process.pid, '). Binary may have failed to exec.');
+            // Don't kill — let the pending 'error' event fire and clean up.
+            this.process = null;
+            return;
+        }
+
         this.isStarted = true;
 
         this.process.stdout.on('data', (data) => {
             this.handleData(data);
-            // console.log(`[BT Driver]: ${data}`);
         });
 
         this.process.stderr.on('data', (data) => {
-            // console.error(`[BT Driver Error]: ${data}`);
+            console.error(`[BT Driver Error]: ${data}`);
         });
 
-        this.process.on('close', (code) => {
+        this.process.on('close', () => {
             this.process = null;
             this.isStarted = false;
-            // console.log(`Driver process exited with code ${code}`);
         });
     }
 
