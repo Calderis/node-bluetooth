@@ -45,9 +45,6 @@ lipo -create -output "$OUTPUT_UNIVERSAL" "$OUTPUT_ARM64" "$OUTPUT_X86"
 # Clean up architecture-specific binaries
 rm -f "$OUTPUT_ARM64" "$OUTPUT_X86"
 
-# Make the binary executable
-chmod +x "$OUTPUT_UNIVERSAL"
-
 # Sign the universal binary
 echo "  -> Signing universal binary..."
 if [ -n "$CODESIGN_IDENTITY" ]; then
@@ -95,6 +92,9 @@ if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ] && [ -n "$TEAM_ID" ] && [ 
 else
     echo "  -> Skipping notarization (APPLE_ID, APPLE_APP_PASSWORD, TEAM_ID or CODESIGN_IDENTITY not set)."
 fi
+
+# Make the binary executable
+chmod +x "$OUTPUT_UNIVERSAL"
 
 echo "Done! Universal binary created at: $OUTPUT_UNIVERSAL"
 echo ""
