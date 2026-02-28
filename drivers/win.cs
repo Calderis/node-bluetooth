@@ -53,6 +53,8 @@ namespace NodeBluetooth
         static Dictionary<string, Dictionary<string, GattDeviceService>> serviceObjectCache = new Dictionary<string, Dictionary<string, GattDeviceService>>(); // Keep service objects alive
         static Dictionary<string, Dictionary<string, GattCharacteristic>> characteristicObjectCache = new Dictionary<string, Dictionary<string, GattCharacteristic>>(); // Keep characteristic objects alive
         static Dictionary<string, GattSession> connectedSessions = new Dictionary<string, GattSession>(); // GattSession per device — set MaintainConnection=false to force BLE disconnect
+        static HashSet<string> disconnectPending = new HashSet<string>(); // Devices with an in-flight explicit disconnect
+        static Dictionary<string, System.Threading.Timer> disconnectTimers = new Dictionary<string, System.Threading.Timer>(); // Fallback timers for disconnect
         
         static void Main(string[] args)
         {
@@ -281,10 +283,18 @@ namespace NodeBluetooth
             var uuid = sender.BluetoothAddress.ToString("X");
             if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
             {
-                // Guard: Disconnect() may have already removed the entry and sent the event.
+                // Guard: device already cleaned up (e.g. fallback timer fired first).
                 if (!connectedDevices.ContainsKey(uuid)) return;
 
-                // Clean up subscriptions
+                // Cancel the fallback timer started by Disconnect(), if any.
+                if (disconnectTimers.ContainsKey(uuid))
+                {
+                    disconnectTimers[uuid].Dispose();
+                    disconnectTimers.Remove(uuid);
+                }
+                disconnectPending.Remove(uuid);
+
+                // Clean up remaining subscriptions (handles both explicit and unexpected disconnects).
                 var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
                 foreach (var key in keysToRemove)
                 {
@@ -293,7 +303,7 @@ namespace NodeBluetooth
                     subscribedCharacteristics.Remove(key);
                 }
 
-                // Dispose GattDeviceService objects
+                // Dispose remaining GattDeviceService objects (already gone for explicit disconnects).
                 if (serviceObjectCache.ContainsKey(uuid))
                 {
                     foreach (var svc in serviceObjectCache[uuid].Values)
@@ -312,57 +322,72 @@ namespace NodeBluetooth
                 }
 
                 connectedDevices.Remove(uuid);
+                // This is the single authoritative emission of "disconnected" — fired only
+                // when Windows confirms the BLE link is actually dropped.
                 SendEvent("disconnected", new { uuid = uuid });
             }
         }
 
         static void Disconnect(string uuid)
         {
-            if (connectedDevices.ContainsKey(uuid))
+            if (!connectedDevices.ContainsKey(uuid)) return;
+
+            // 1. Clean up subscriptions for this device
+            var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
+            foreach (var key in keysToRemove)
             {
-                // Clean up subscriptions for this device
-                var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
-                foreach (var key in keysToRemove)
-                {
-                    var sub = subscribedCharacteristics[key];
-                    try { sub.Characteristic.ValueChanged -= sub.Handler; } catch { }
-                    subscribedCharacteristics.Remove(key);
-                }
-
-                // Dispose GattDeviceService objects — they hold GATT sessions open and
-                // prevent the device from fully disconnecting even after device.Dispose().
-                if (serviceObjectCache.ContainsKey(uuid))
-                {
-                    foreach (var svc in serviceObjectCache[uuid].Values)
-                        try { svc.Dispose(); } catch { }
-                    serviceObjectCache.Remove(uuid);
-                }
-                if (characteristicObjectCache.ContainsKey(uuid))
-                    characteristicObjectCache.Remove(uuid);
-                if (serviceCache.ContainsKey(uuid))
-                    serviceCache.Remove(uuid);
-
-                var device = connectedDevices[uuid];
-                // Remove from dict BEFORE Dispose() so Device_ConnectionStatusChanged
-                // doesn't fire a spurious second "disconnected" event.
-                connectedDevices.Remove(uuid);
-
-                // Set MaintainConnection=false BEFORE Dispose() so Windows drops the
-                // physical BLE link immediately instead of keeping it in a zombie state.
-                if (connectedSessions.ContainsKey(uuid))
-                {
-                    try
-                    {
-                        connectedSessions[uuid].MaintainConnection = false;
-                        connectedSessions[uuid].Dispose();
-                    }
-                    catch { }
-                    connectedSessions.Remove(uuid);
-                }
-
-                device.Dispose();
-                SendEvent("disconnected", new { uuid = uuid });
+                var sub = subscribedCharacteristics[key];
+                try { sub.Characteristic.ValueChanged -= sub.Handler; } catch { }
+                subscribedCharacteristics.Remove(key);
             }
+
+            // 2. Dispose GattDeviceService objects — they hold GATT sessions open and
+            // prevent the device from fully disconnecting even after device.Dispose().
+            if (serviceObjectCache.ContainsKey(uuid))
+            {
+                foreach (var svc in serviceObjectCache[uuid].Values)
+                    try { svc.Dispose(); } catch { }
+                serviceObjectCache.Remove(uuid);
+            }
+            if (characteristicObjectCache.ContainsKey(uuid))
+                characteristicObjectCache.Remove(uuid);
+            if (serviceCache.ContainsKey(uuid))
+                serviceCache.Remove(uuid);
+
+            // 3. Set MaintainConnection=false BEFORE Dispose() so Windows drops the
+            // physical BLE link immediately instead of keeping it in a zombie state.
+            if (connectedSessions.ContainsKey(uuid))
+            {
+                try
+                {
+                    connectedSessions[uuid].MaintainConnection = false;
+                    connectedSessions[uuid].Dispose();
+                }
+                catch { }
+                connectedSessions.Remove(uuid);
+            }
+
+            // 4. Mark as pending — Device_ConnectionStatusChanged will do the final cleanup
+            // and emit "disconnected" once Windows confirms the link is actually dropped.
+            // We intentionally do NOT remove from connectedDevices here so the event handler
+            // can detect this device and know it still needs to fire the event.
+            disconnectPending.Add(uuid);
+
+            connectedDevices[uuid].Dispose();
+
+            // 5. Fallback: if ConnectionStatusChanged never fires (e.g. Windows doesn't
+            // notify after Dispose), send the event after 3 seconds to avoid hanging.
+            var fallback = new System.Threading.Timer(_ =>
+            {
+                if (disconnectPending.Contains(uuid))
+                {
+                    disconnectPending.Remove(uuid);
+                    disconnectTimers.Remove(uuid);
+                    connectedDevices.Remove(uuid);
+                    SendEvent("disconnected", new { uuid = uuid });
+                }
+            }, null, 3000, System.Threading.Timeout.Infinite);
+            disconnectTimers[uuid] = fallback;
         }
 
         static void DiscoverServices(string uuid, List<string> filter)

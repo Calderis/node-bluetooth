@@ -240,8 +240,22 @@ class BluetoothManager extends EventEmitter {
         this.sendCommand('connect', { uuid });
     }
 
-    disconnect(uuid) {
-        this.sendCommand('disconnect', { uuid });
+    disconnect(uuid, timeout = 5000) {
+        return new Promise((resolve, reject) => {
+            const onDisconnect = (data) => {
+                if (data && data.uuid === uuid) {
+                    clearTimeout(timer);
+                    this.removeListener('disconnect', onDisconnect);
+                    resolve(data);
+                }
+            };
+            this.on('disconnect', onDisconnect);
+            this.sendCommand('disconnect', { uuid });
+            const timer = setTimeout(() => {
+                this.removeListener('disconnect', onDisconnect);
+                reject(new Error(`Disconnect timeout for device ${uuid}`));
+            }, timeout);
+        });
     }
 }
 
