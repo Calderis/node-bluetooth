@@ -242,26 +242,32 @@ namespace NodeBluetooth
             var uuid = sender.BluetoothAddress.ToString("X");
             if (sender.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
             {
-                if (connectedDevices.ContainsKey(uuid))
+                // Guard: Disconnect() may have already removed the entry and sent the event.
+                if (!connectedDevices.ContainsKey(uuid)) return;
+
+                // Clean up subscriptions
+                var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
+                foreach (var key in keysToRemove)
                 {
-                    // Clean up subscriptions for this device
-                    var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
-                    foreach (var key in keysToRemove)
-                    {
-                        subscribedCharacteristics.Remove(key);
-                    }
-                    
-                    // Clean up caches
-                    if (serviceObjectCache.ContainsKey(uuid))
-                        serviceObjectCache.Remove(uuid);
-                    if (characteristicObjectCache.ContainsKey(uuid))
-                        characteristicObjectCache.Remove(uuid);
-                    if (serviceCache.ContainsKey(uuid))
-                        serviceCache.Remove(uuid);
-                    
-                    connectedDevices.Remove(uuid);
-                    SendEvent("disconnected", new { uuid = uuid });
+                    var sub = subscribedCharacteristics[key];
+                    try { sub.Characteristic.ValueChanged -= sub.Handler; } catch { }
+                    subscribedCharacteristics.Remove(key);
                 }
+
+                // Dispose GattDeviceService objects
+                if (serviceObjectCache.ContainsKey(uuid))
+                {
+                    foreach (var svc in serviceObjectCache[uuid].Values)
+                        try { svc.Dispose(); } catch { }
+                    serviceObjectCache.Remove(uuid);
+                }
+                if (characteristicObjectCache.ContainsKey(uuid))
+                    characteristicObjectCache.Remove(uuid);
+                if (serviceCache.ContainsKey(uuid))
+                    serviceCache.Remove(uuid);
+
+                connectedDevices.Remove(uuid);
+                SendEvent("disconnected", new { uuid = uuid });
             }
         }
 
@@ -273,20 +279,29 @@ namespace NodeBluetooth
                 var keysToRemove = subscribedCharacteristics.Keys.Where(k => k.StartsWith(uuid + "/")).ToList();
                 foreach (var key in keysToRemove)
                 {
+                    var sub = subscribedCharacteristics[key];
+                    try { sub.Characteristic.ValueChanged -= sub.Handler; } catch { }
                     subscribedCharacteristics.Remove(key);
                 }
-                
-                // Clean up caches
+
+                // Dispose GattDeviceService objects — they hold GATT sessions open and
+                // prevent the device from fully disconnecting even after device.Dispose().
                 if (serviceObjectCache.ContainsKey(uuid))
+                {
+                    foreach (var svc in serviceObjectCache[uuid].Values)
+                        try { svc.Dispose(); } catch { }
                     serviceObjectCache.Remove(uuid);
+                }
                 if (characteristicObjectCache.ContainsKey(uuid))
                     characteristicObjectCache.Remove(uuid);
                 if (serviceCache.ContainsKey(uuid))
                     serviceCache.Remove(uuid);
-                
+
                 var device = connectedDevices[uuid];
-                device.Dispose(); // Disconnects
+                // Remove from dict BEFORE Dispose() so Device_ConnectionStatusChanged
+                // doesn't fire a spurious second "disconnected" event.
                 connectedDevices.Remove(uuid);
+                device.Dispose();
                 SendEvent("disconnected", new { uuid = uuid });
             }
         }
