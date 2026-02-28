@@ -123,7 +123,16 @@ class BluetoothManager extends EventEmitter {
                 resolve();
             });
 
-            this.process.kill();
+            // Close stdin to signal EOF — the driver will disconnect all BLE devices
+            // then exit cleanly (Windows keeps devices connected until Dispose() is called).
+            // Fallback: force-kill after 2 s if the driver doesn't exit on its own.
+            if (this.process.stdin) {
+                this.process.stdin.end();
+            }
+            const fallback = setTimeout(() => {
+                if (this.process) this.process.kill();
+            }, 2000);
+            this.process.once('close', () => clearTimeout(fallback));
         });
     }
 

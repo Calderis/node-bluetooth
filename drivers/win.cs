@@ -80,6 +80,13 @@ namespace NodeBluetooth
                     if (line == null) // EOF: stdin closed, shut down cleanly
                     {
                         watcher.Stop();
+                        // Disconnect all connected devices so Windows releases the BLE connection.
+                        // Without this, devices stay "paired/connected" and won't appear in a new scan.
+                        foreach (var uuid in connectedDevices.Keys.ToList())
+                        {
+                            try { connectedDevices[uuid].Dispose(); } catch { }
+                        }
+                        connectedDevices.Clear();
                         break;
                     }
                     if (string.IsNullOrWhiteSpace(line)) continue;
