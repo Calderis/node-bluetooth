@@ -52,6 +52,7 @@ namespace NodeBluetooth
         static Dictionary<string, Dictionary<string, Guid>> serviceCache = new Dictionary<string, Dictionary<string, Guid>>(); // DeviceID -> { ServiceUUID-String -> ServiceGUID }
         static Dictionary<string, Dictionary<string, GattDeviceService>> serviceObjectCache = new Dictionary<string, Dictionary<string, GattDeviceService>>(); // Keep service objects alive
         static Dictionary<string, Dictionary<string, GattCharacteristic>> characteristicObjectCache = new Dictionary<string, Dictionary<string, GattCharacteristic>>(); // Keep characteristic objects alive
+        static Dictionary<string, GattSession> connectedSessions = new Dictionary<string, GattSession>(); // GattSession per device — set MaintainConnection=false to force BLE disconnect
         
         static void Main(string[] args)
         {
@@ -84,9 +85,29 @@ namespace NodeBluetooth
                         // Without this, devices stay "paired/connected" and won't appear in a new scan.
                         foreach (var uuid in connectedDevices.Keys.ToList())
                         {
+                            // Dispose GattDeviceService objects first — they keep GATT sessions alive.
+                            if (serviceObjectCache.ContainsKey(uuid))
+                            {
+                                foreach (var svc in serviceObjectCache[uuid].Values)
+                                    try { svc.Dispose(); } catch { }
+                            }
+                            // Release GattSession with MaintainConnection=false to signal Windows
+                            // to drop the physical BLE link.
+                            if (connectedSessions.ContainsKey(uuid))
+                            {
+                                try
+                                {
+                                    connectedSessions[uuid].MaintainConnection = false;
+                                    connectedSessions[uuid].Dispose();
+                                }
+                                catch { }
+                            }
                             try { connectedDevices[uuid].Dispose(); } catch { }
                         }
                         connectedDevices.Clear();
+                        connectedSessions.Clear();
+                        serviceObjectCache.Clear();
+                        characteristicObjectCache.Clear();
                         break;
                     }
                     if (string.IsNullOrWhiteSpace(line)) continue;
@@ -219,7 +240,12 @@ namespace NodeBluetooth
                     device.Dispose();
                     return;
                 }
-                
+
+                // Dispose the temporary GattDeviceService objects — they were only needed to
+                // force the BLE connection. Keeping them alive would prevent a clean disconnect.
+                foreach (var svc in gattResult.Services)
+                    try { svc.Dispose(); } catch { }
+
                 // Verify we're actually connected
                 if (device.ConnectionStatus != BluetoothConnectionStatus.Connected)
                 {
@@ -228,7 +254,20 @@ namespace NodeBluetooth
                     device.Dispose();
                     return;
                 }
-                
+
+                // Acquire a GattSession so we can later set MaintainConnection=false to
+                // explicitly signal Windows to drop the physical BLE link on disconnect.
+                try
+                {
+                    var session = SyncWait(GattSession.FromDeviceIdAsync(device.BluetoothDeviceId));
+                    session.MaintainConnection = true;
+                    connectedSessions[uuid] = session;
+                }
+                catch (Exception ex)
+                {
+                    Log("Warning: could not acquire GattSession: " + ex.Message);
+                }
+
                 SendEvent("connected", new { uuid = uuid });
             } 
             catch (Exception ex) 
@@ -266,6 +305,12 @@ namespace NodeBluetooth
                 if (serviceCache.ContainsKey(uuid))
                     serviceCache.Remove(uuid);
 
+                if (connectedSessions.ContainsKey(uuid))
+                {
+                    try { connectedSessions[uuid].Dispose(); } catch { }
+                    connectedSessions.Remove(uuid);
+                }
+
                 connectedDevices.Remove(uuid);
                 SendEvent("disconnected", new { uuid = uuid });
             }
@@ -301,6 +346,20 @@ namespace NodeBluetooth
                 // Remove from dict BEFORE Dispose() so Device_ConnectionStatusChanged
                 // doesn't fire a spurious second "disconnected" event.
                 connectedDevices.Remove(uuid);
+
+                // Set MaintainConnection=false BEFORE Dispose() so Windows drops the
+                // physical BLE link immediately instead of keeping it in a zombie state.
+                if (connectedSessions.ContainsKey(uuid))
+                {
+                    try
+                    {
+                        connectedSessions[uuid].MaintainConnection = false;
+                        connectedSessions[uuid].Dispose();
+                    }
+                    catch { }
+                    connectedSessions.Remove(uuid);
+                }
+
                 device.Dispose();
                 SendEvent("disconnected", new { uuid = uuid });
             }
