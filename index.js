@@ -3,6 +3,17 @@ const path = require('path');
 const EventEmitter = require('events');
 const os = require('os');
 
+// Webpack/esbuild bundlers replace __dirname with '' for web targets.
+// This fallback uses require.resolve to locate the package at runtime in Node.js/Electron.
+function getModuleDir() {
+    if (__dirname && __dirname.length > 0) return __dirname;
+    try {
+        return path.dirname(require.resolve('node-bluetooth/package.json'));
+    } catch (e) {}
+    return process.cwd();
+}
+const MODULE_DIR = getModuleDir();
+
 class BluetoothManager extends EventEmitter {
     constructor() {
         super();
@@ -27,7 +38,7 @@ class BluetoothManager extends EventEmitter {
         if (platform === 'darwin') {
             // macOS: Check for pre-compiled binary first, fallback to Swift
             const fs = require('fs');
-            let compiledPath = path.join(__dirname, 'drivers', 'mac');
+            let compiledPath = path.join(MODULE_DIR, 'drivers', 'mac');
             // When packaged with Electron (asar), binaries must be in app.asar.unpacked
             if (compiledPath.includes('app.asar' + path.sep)) {
                 compiledPath = compiledPath.replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep);
@@ -41,7 +52,7 @@ class BluetoothManager extends EventEmitter {
                 // Fallback: Run Swift interpreter (requires Xcode/Swift)
                 console.warn('Using Swift interpreter. For better performance, run: npm run compile:mac');
                 cmd = '/usr/bin/swift';
-                args = [path.join(__dirname, 'drivers', 'mac.swift')];
+                args = [path.join(MODULE_DIR, 'drivers', 'mac.swift')];
             } else {
                 console.error('macOS Bluetooth driver not available.');
                 console.error('Please run "npm run compile:mac" on a Mac with Xcode installed.');
@@ -50,7 +61,7 @@ class BluetoothManager extends EventEmitter {
         } else if (platform === 'win32') {
             const fs = require('fs');
             // When packaged with Electron (asar), binaries must be in app.asar.unpacked
-            let exePath = path.join(__dirname, 'drivers', 'win.exe');
+            let exePath = path.join(MODULE_DIR, 'drivers', 'win.exe');
             console.log('Looking for Windows driver at:', exePath);
             if (exePath.includes('app.asar' + path.sep)) {
                 exePath = exePath.replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep);
@@ -61,7 +72,7 @@ class BluetoothManager extends EventEmitter {
                 args = [];
             } else {
                 console.warn("Windows driver not found. Please run 'npm run compile:win' on your Windows machine to compile drivers/win.cs");
-                if (__dirname.includes('app.asar')) {
+                if (MODULE_DIR.includes('app.asar')) {
                     console.warn("Electron detected: add asarUnpack in your electron-builder config:");
                     console.warn('  "asarUnpack": ["**/node_modules/@calderis/node-bluetooth/drivers/**"]');
                 }

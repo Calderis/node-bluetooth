@@ -1,6 +1,6 @@
 {
   "name": "@calderis/node-bluetooth",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "Calderis",
   "main": "index.js",
   "scripts": {
