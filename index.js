@@ -26,7 +26,7 @@ class BluetoothManager extends EventEmitter {
 
         if (platform === 'darwin') {
             // macOS: Check for pre-compiled binary first, fallback to Swift
-            const fs = require('fs');)
+            const fs = require('fs');
             let compiledPath = path.join(__dirname, 'drivers', 'mac');
             // When packaged with Electron (asar), binaries must be in app.asar.unpacked
             if (compiledPath.includes('app.asar' + path.sep)) {
